@@ -65,14 +65,17 @@ async function consumeSse(response: Response, onData: (data: string, event?: str
     while (true) {
       if (signal.aborted) { await reader.cancel(); return; }
       const { value, done } = await reader.read();
-      if (done) break;
+      if (done) {
+        buffer += decoder.decode();
+        break;
+      }
       buffer += decoder.decode(value, { stream: true });
-      const blocks = buffer.split("\n\n");
+      const blocks = buffer.replace(/\r\n/g, "\n").split("\n\n");
       buffer = blocks.pop() ?? "";
       for (const block of blocks) {
         let event = "";
         const dataLines: string[] = [];
-        for (const line of block.split("\n")) {
+        for (const line of block.split(/\r?\n/)) {
           if (line.startsWith("event:")) event = line.slice(6).trim();
           if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
         }
@@ -80,9 +83,9 @@ async function consumeSse(response: Response, onData: (data: string, event?: str
       }
     }
     // Flush a final event if the stream did not end with a blank line.
-    const tail = buffer.trim();
+    const tail = buffer.replace(/\r\n/g, "\n").trim();
     if (tail) {
-      const dataLines = tail.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim());
+      const dataLines = tail.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim());
       if (dataLines.length) onData(dataLines.join("\n"));
     }
   } finally {
@@ -207,8 +210,10 @@ async function runGemini(opts: StreamOptions) {
         ...imageParts(turn.attachments).map((image) => ({ inlineData: { mimeType: image.type, data: image.dataUrl!.split(",")[1] } })),
       ],
     })),
-    generationConfig: { ...(model.maxOutputTokens ? { maxOutputTokens: model.maxOutputTokens } : {}) },
-    ...(thinking && model.capabilities.reasoning ? { generationConfig: { thinkingConfig: { includeThoughts: true, thinkingBudget: 2048 } } } : {}),
+    generationConfig: {
+      ...(model.maxOutputTokens ? { maxOutputTokens: model.maxOutputTokens } : {}),
+      ...(thinking && model.capabilities.reasoning ? { thinkingConfig: { includeThoughts: true, thinkingBudget: 2048 } } : {}),
+    },
   };
   const headers: Record<string, string> = { "Content-Type": "application/json", ...Object.fromEntries(provider.headers.filter((h) => h.key).map((h) => [h.key, h.value])) };
   const init: RequestInit = { method: "POST", headers, body: JSON.stringify(body), signal };

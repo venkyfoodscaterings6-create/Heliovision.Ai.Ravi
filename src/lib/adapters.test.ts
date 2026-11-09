@@ -62,6 +62,14 @@ describe("OpenAI-compatible streaming adapter", () => {
     expect(init.headers.Authorization).toBe("Bearer sk-test-1234");
   });
 
+  it("parses CRLF-framed SSE streams", async () => {
+    const body = 'data: {"choices":[{"delta":{"content":"CRLF works"}}]}\r\n\r\ndata: [DONE]\r\n\r\n';
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(body, { status: 200 })));
+    const events: any[] = [];
+    await streamChat({ provider: provider(), model: model(), turns: [], system: "", signal: new AbortController().signal, onEvent: (event) => events.push(event) });
+    expect(events.filter((event) => event.type === "text").map((event) => event.text).join("")).toBe("CRLF works");
+  });
+
   it("never sends the key to a third party", async () => {
     const fetchMock = vi.fn(async () => new Response("data: [DONE]\n\n", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -120,6 +128,24 @@ describe("Gemini streaming adapter", () => {
     expect(url).toContain("streamGenerateContent?alt=sse");
     expect(url).toContain("key=sk-test-1234");
     expect(events.filter((e) => e.type === "text").map((e) => e.text).join("")).toBe("Hello from Gemini");
+  });
+
+  it("preserves the output token limit when thinking is enabled", async () => {
+    const fetchMock = vi.fn(async () => new Response("data: [DONE]\n\n", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await streamChat({
+      provider: provider("gemini"),
+      model: { ...model(), maxOutputTokens: 8192 },
+      turns: [{ role: "user", content: "Hi" }],
+      system: "s",
+      signal: new AbortController().signal,
+      onEvent: () => {},
+      thinking: true,
+    });
+    const [, init] = fetchMock.mock.calls[0] as any;
+    const body = JSON.parse(init.body);
+    expect(body.generationConfig.maxOutputTokens).toBe(8192);
+    expect(body.generationConfig.thinkingConfig.thinkingBudget).toBe(2048);
   });
 });
 

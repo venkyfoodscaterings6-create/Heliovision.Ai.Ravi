@@ -22,6 +22,7 @@ interface WorkspaceState {
   sidebarCollapsed: boolean;
   currentChatId: string | null;
   selectedModelId: string;
+  modelSelectionExplicit: boolean;
   providers: Provider[];
   models: AIModel[];
   chats: Chat[];
@@ -89,6 +90,16 @@ const baseSeed = {
   settings: seedSettings,
 };
 
+function firstConfiguredLiveModel(models: AIModel[], providers: Provider[]) {
+  return [...models]
+    .filter((model) => model.enabled && !model.isDemo)
+    .sort((a, b) => a.sort - b.sort)
+    .find((model) => {
+      const provider = providers.find((candidate) => candidate.id === model.providerId);
+      return provider?.enabled && (Boolean(provider.apiKey) || provider.baseUrl.includes("localhost"));
+    });
+}
+
 export const useWorkspace = create<WorkspaceState>()(
   persist(
     (set, get) => ({
@@ -98,6 +109,7 @@ export const useWorkspace = create<WorkspaceState>()(
       sidebarCollapsed: false,
       currentChatId: null,
       selectedModelId: DEMO_MODEL.id,
+      modelSelectionExplicit: false,
       authName: "Alex Morgan",
       ...baseSeed,
       toasts: [],
@@ -149,24 +161,33 @@ export const useWorkspace = create<WorkspaceState>()(
         return id;
       },
       updateProvider: (id, patch) =>
-        set((s) => ({
-          providers: s.providers.map((p) =>
+        set((s) => {
+          const providers = s.providers.map((p) =>
             p.id === id
               ? { ...p, ...patch, keyMasked: patch.apiKey ? `••••••••••••${patch.apiKey.slice(-4)}` : p.keyMasked }
               : p,
-          ),
-        })),
+          );
+          const selectedModel = s.models.find((model) => model.id === s.selectedModelId);
+          const liveModel = !s.modelSelectionExplicit && selectedModel?.isDemo ? firstConfiguredLiveModel(s.models, providers) : undefined;
+          return { providers, ...(liveModel ? { selectedModelId: liveModel.id } : {}) };
+        }),
       removeProvider: (id) =>
         set((s) => ({
           providers: s.providers.filter((p) => p.id !== id),
           models: s.models.filter((m) => m.providerId !== id),
         })),
-      addModel: (model) => set((s) => ({ models: [...s.models, model] })),
+      addModel: (model) =>
+        set((s) => {
+          const models = [...s.models, model];
+          const selectedModel = s.models.find((candidate) => candidate.id === s.selectedModelId);
+          const liveModel = !s.modelSelectionExplicit && selectedModel?.isDemo ? firstConfiguredLiveModel(models, s.providers) : undefined;
+          return { models, ...(liveModel ? { selectedModelId: liveModel.id } : {}) };
+        }),
       updateModel: (id, patch) => set((s) => ({ models: s.models.map((m) => (m.id === id ? { ...m, ...patch } : m)) })),
       removeModel: (id) => set((s) => ({ models: s.models.filter((m) => m.id !== id) })),
       selectModel: (id) => {
         localStorage.setItem("hv_selected_model", id);
-        set({ selectedModelId: id });
+        set({ selectedModelId: id, modelSelectionExplicit: true });
       },
       setDefaultModel: (id) =>
         set((s) => ({ models: s.models.map((m) => ({ ...m, isDefault: m.id === id })), selectedModelId: s.selectedModelId })),
@@ -214,6 +235,7 @@ export const useWorkspace = create<WorkspaceState>()(
           files: data.files ?? s.files,
           settings: data.settings ?? s.settings,
           selectedModelId: data.selectedModelId ?? s.selectedModelId,
+          modelSelectionExplicit: data.modelSelectionExplicit ?? s.modelSelectionExplicit,
         })),
       resetWorkspace: () =>
         set({
@@ -224,6 +246,7 @@ export const useWorkspace = create<WorkspaceState>()(
           projects: [],
           files: [],
           selectedModelId: DEMO_MODEL.id,
+          modelSelectionExplicit: false,
           currentChatId: null,
           page: "chat",
         }),
@@ -237,6 +260,7 @@ export const useWorkspace = create<WorkspaceState>()(
         sidebarCollapsed: state.sidebarCollapsed,
         currentChatId: state.currentChatId,
         selectedModelId: state.selectedModelId,
+        modelSelectionExplicit: state.modelSelectionExplicit,
         providers: state.providers,
         models: state.models,
         chats: state.chats,
@@ -247,7 +271,9 @@ export const useWorkspace = create<WorkspaceState>()(
         authName: state.authName,
       }),
       onRehydrateStorage: () => (state) => {
-        state?.hydrated;
+        if (state?.modelSelectionExplicit || !state?.models.find((model) => model.id === state.selectedModelId)?.isDemo) return;
+        const liveModel = firstConfiguredLiveModel(state.models, state.providers);
+        if (liveModel) state.selectModel(liveModel.id);
       },
     },
   ),
